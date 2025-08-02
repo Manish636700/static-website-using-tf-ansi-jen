@@ -14,9 +14,6 @@ read -p "Enter Aws Access Key: " AWS_ACCESS_KEY
 read -p "Enter Aws Secret Key: " AWS_SECRET_KEY
 read -p "Enter the Bucket name:" BUCKET_NAME
 #Apply defaults
-
-AWS_ACCESS_KEY=${AWS_ACCESS_KEY:-AKIARHFT66P3I5XIBO57}
-AWS_SECRET_KEY=${AWS_SECRET_KEY:-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}
 JOB_NAME=${JOB_NAME:-auto-deploy}
 
 
