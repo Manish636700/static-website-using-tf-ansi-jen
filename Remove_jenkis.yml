@@ -1,0 +1,55 @@
+ - name: Remove Jenkins from EC2
+   hosts: all
+   become: true
+   tasks:
+     - name: check if Jenkins service exists
+       shell: systemctl list-unit-files | grep jenkins.service
+       register: jenkins_service_check
+       ignore_errors: true
+
+     - name: Stop Jenkins service if it exists
+       service:
+         name: jenkins
+         state: stopped
+         enabled: false
+       when: jenkins_service_check.rc == 0
+
+     - name: Remove Jenkins package
+       apt:
+         name: jenkins
+         state: absent
+         purge: yes
+
+     - name: Remove Jenkins pro
+       file:
+         path: /etc/apt/sources.list.d/jenkins.list
+         state: absent
+     
+     - name: Remove Jenkins key
+       file:
+         path: /usr/share/keyrings/jenkins-keyring.asc
+         state: absent
+     
+     - name: check If jenkins config
+       stat:
+         path: /var/lib/jenkins
+       register: jenkins_config_dir
+
+     - name: Remove Jenkins config directory
+       file:
+         path: /var/lib/jenkins
+         state: absent
+         recurse: yes
+       when: jenkins_config_dir.stat.exists and jenkins_config_dir.stat.isdir
+
+     - name: check if jenkins logs
+       stat:
+         path: /var/log/jenkins
+       register: jenkins_log_dir
+
+     - name: Remove Jenkins log directory if it exists
+       file:
+         path: /var/log/jenkins
+         state: absent
+         recurse: yes
+       when: jenkins_log_dir.stat.exists and jenkins_log_dir.stat.isdir

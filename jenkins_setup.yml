@@ -1,0 +1,276 @@
+- name: Install Jenkins on EC2
+  hosts: all
+  become: yes
+  vars:
+    jenkins_admin_user: admin
+    jenkins_admin_pass: admin123
+  tasks:
+    - name: update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Java
+      apt:
+        name: 
+          - openjdk-17-jdk
+          - fontconfig
+        state: present
+
+    - name: Register java
+      command: update-alternatives --install /usr/bin/java java /usr/lib/jvm/java-17-openjdk-amd64/bin/java 1
+      args:
+        creates: /usr/lib/jvm/java-17-openjdk-amd64/bin/java
+
+    - name: set Java 17
+      command: update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java 
+    
+    - name: Verify Java version
+      command: java -version
+      register: java_version_ouput
+      ignore_errors: true
+
+    - name: Show Java version output
+      debug:
+        var: java_version_ouput.stderr_lines
+
+    - name: Remove Jenkins repo line from /etc/apt/sources.list if it exists
+      lineinfile:
+        path: /etc/apt/sources.list
+        regexp: '^deb .*pkg.jenkins.io'
+        state: absent
+
+    - name: Remove old Jenkins repo if it exists
+      file:
+        path: /etc/apt/sources.list.d/jenkins.list
+        state: absent
+
+
+    - name: Add Jenkins repo key
+      get_url:
+        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+        dest: /usr/share/keyrings/jenkins-keyring.asc
+        mode: '0664'
+    
+    - name: Add Jenkins repo
+      apt_repository:
+          repo: "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/"
+          state: present
+          filename: jenkins
+
+    - name: Install Jenkins
+      apt:
+         name: jenkins
+         update_cache: yes
+         state: present
+
+    - name: Disable Jenkins setup wizard
+      lineinfile:
+        path: /etc/default/jenkins
+        regexp: '^JAVA_ARGS='
+        line: 'JAVA_ARGS="-Djenkins.install.runSetupWizard=false"'
+        create: yes
+    - name: Create init.groovy.d directory
+      file:
+        path: /var/lib/jenkins/init.groovy.d
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: '0755'
+
+    - name: Remove incorrectly created directory if exists
+      file:
+        path: /var/lib/jenkins/init.groovy.d/basic-security.groovy
+        state: absent
+
+    - name: Add Jenkins init script to create admin user
+      copy:
+        dest: /var/lib/jenkins/init.groovy.d/basic-security.groovy
+        content: |
+          import jenkins.model.*
+          import hudson.security.*
+
+          def instance = Jenkins.getInstance()
+          
+          def hudsonRealm = new HudsonPrivateSecurityRealm(false)
+          hudsonRealm.createAccount("{{ jenkins_admin_user }}", "{{ jenkins_admin_pass }}")
+          instance.setSecurityRealm(hudsonRealm)
+
+          def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+          strategy.setAllowAnonymousRead(false)
+          instance.setAuthorizationStrategy(strategy)
+          instance.save()
+        owner: jenkins
+        group: jenkins
+        mode: '0644'
+
+    - name: Reload systemmd 
+      systemd:
+        daemon_reload: yes
+
+    - name: Restart Jenkins after user setup
+      systemd:
+        name: jenkins
+        state: restarted
+        enabled: yes 
+
+    - name: Enable and start Jenkins
+      systemd:
+        name: jenkins
+        enabled: yes
+        state: started
+
+    - name: Wait for jenkins to be up
+      wait_for:
+        port: 8080
+        delay: 10
+        timeout: 90
+
+    - name: Wait for Jenkins to be ready
+      uri:
+        url: "http://{{ ansible_host }}:8080/login"
+        return_content: yes
+        status_code: 200
+        validate_certs: no
+      register: jenkins_status
+      until: jenkins_status.status == 200
+      retries: 15
+      delay: 10
+    - debug:
+        msg: "Jenkins response status : {{ jenkins_status.status }}"
+   
+    - name: Download Jenkins CLI
+      get_url:
+        url: "http://{{ ansible_host }}:8080/jnlpJars/jenkins-cli.jar"
+        dest: "/tmp/jenkins-cli.jar"
+    
+    - name: install-plugin-workflow
+      shell: >
+        java -jar /tmp/jenkins-cli.jar
+        -s http://{{ ansible_host }}:8080
+        -auth {{ jenkins_admin_user }}:{{ jenkins_admin_pass }} 
+        install-plugin {{ item }} -deploy
+      loop:
+        - workflow-job
+        - pipeline-stage-view
+        - blueocean
+        - github
+        - git-client
+        - git
+        - workflow-aggregator
+        - credentials
+        - job-dsl
+        - configuration-as-code
+      args:
+        creates: "/var/lib/jenkins/plugins/{{ item }}.jpi"
+
+    - name: Ensure plugin directory permissions
+      file:
+        path: /var/lib/jenkins/plugins
+        owner: jenkins
+        group: jenkins
+        mode: '0755'
+        recurse: yes
+
+    - name: restart
+      shell: >
+        java -jar /tmp/jenkins-cli.jar 
+        -s http://{{ ansible_host }}:8080
+        -auth {{ jenkins_admin_user }}:{{ jenkins_admin_pass }} 
+        safe-restart
+
+    - name: wait for jenkins
+      uri:
+        url: "http://{{ ansible_host }}:8080/login"
+        status_code: 200
+        timeout: 60
+      register: jenkins_status
+      until: jenkins_status.status == 200
+      retries: 10
+      delay: 15
+
+    - name: Create Jenkins job xml file
+      template:
+        src: jenkins-job.xml.j2
+        dest: /tmp/jenkins-job.xml
+
+    - name: Delete existing Jenkins job
+      shell: >
+        java -jar /tmp/jenkins-cli.jar
+        -s http://{{ ansible_host }}:8080
+        -auth {{ jenkins_admin_user }}:{{ jenkins_admin_pass }}
+        delete-job {{ job_name }}
+      register: delete_job_result
+      failed_when: false
+      ignore_errors: yes
+
+
+    - name: Ensure Jenkins job workspace
+      file:
+        path: /var/lib/jenkins/workspace/{{ job_name }}
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: '0755'
+    
+
+    - name: Copy Jenkinsfile
+      copy:
+        src: Jenkinsfile
+        dest: /var/lib/jenkins/workspace/{{ job_name }}/Jenkinsfile
+        owner: jenkins
+        group: jenkins
+        mode: '0644'
+
+    - name: Copy environment file to jenkins workspace
+      copy:
+        src: jenkins_env_vars.env
+        dest: /var/lib/jenkins/workspace/{{ job_name }}/jenkins_env_vars.env
+        owner: jenkins
+        group: jenkins
+        mode: '0644'
+
+    - name: Create Jenkins Job using cli
+      shell: >
+        java -jar /tmp/jenkins-cli.jar
+        -s http://{{ ansible_host }}:8080
+        -auth {{ jenkins_admin_user }}:{{ jenkins_admin_pass }}
+        create-job {{ job_name }} < /tmp/jenkins-job.xml
+
+    - name: Trigger Jenkins Job automatically
+      shell: >
+        java -jar /tmp/jenkins-cli.jar
+        -s http://{{ ansible_host }}:8080
+        -auth {{ jenkins_admin_user }}:{{ jenkins_admin_pass }}
+        build {{ job_name }}
+
+
+    - name: Wait for Jenkins job to complete
+      uri:
+        url: "http://{{ ansible_host }}:8080/job/{{ job_name }}/lastBuild/api/json"
+        user: "{{ jenkins_admin_user }}"
+        password: "{{ jenkins_admin_pass }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: job_status
+      until: job_status.json.result is not none
+      retries: 10
+      delay: 6
+    
+  
+    - name: Get last build result
+      uri:
+        url: "http://{{ ansible_host }}:8080/job/{{ job_name }}/lastBuild/consoleText"
+        user: "{{ jenkins_admin_user }}"
+        password: "{{ jenkins_admin_pass }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: build_console_output
+    
+    - name: show Jenkins build log
+      debug:
+        msg: "{{ build_console_output.content }}"
+
+    - name: Show pipelines result
+      debug:
+        msg: "Pipelines status: {{ job_status.json.result }}"
+

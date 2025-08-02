@@ -1,0 +1,13 @@
+<flow-definition plugin="workflow-job@2.40">
+   <description>CI/CD job using local jenkins</description>
+   	<keepDependencies>false</keepDependencies>
+   	<properties/>
+   	<definition class = "org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps@2.92">
+   	<script><![CDATA[ {{ lookup('file','Jenkinsfile') }} ]]></script> 
+   	<sandbox>true</sandbox>
+   	</definition>
+   	<triggers/>
+   <disabled>false</disabled>
+</flow-definition>
+	
+
