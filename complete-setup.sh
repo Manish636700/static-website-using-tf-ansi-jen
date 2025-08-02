@@ -48,6 +48,8 @@ export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_KEY"
 
 
 cd ./Terraform
+
+terraform init -input=false
 terraform destroy -target=aws_instance.example -auto-approve \
   -var="public_key_path=$(realpath manish-key.pub)" \
   -var="key_name=manish-key"
